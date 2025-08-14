@@ -15,23 +15,63 @@ from botocore.client import Config
 from botocore.exceptions import EndpointConnectionError, ClientError
 
 # =========================================================
-# ENV
+# Secrets loader (works with .env locally and st.secrets on Cloud)
 # =========================================================
-load_dotenv()
+load_dotenv()  # safe no-op on Cloud
 
-S3_REGION = os.getenv("RUNPOD_S3_REGION")
-S3_BUCKET = os.getenv("RUNPOD_S3_BUCKET")
-S3_KEY    = os.getenv("RUNPOD_S3_ACCESS_KEY")
-S3_SECRET = os.getenv("RUNPOD_S3_SECRET_KEY")
+def _sget(key: str, default: Optional[str] = None, section: Optional[str] = None) -> Optional[str]:
+    """
+    Priority:
+      1) Environment variables (local / Docker)
+      2) st.secrets[section][key] or st.secrets[key] (Streamlit Cloud)
+      3) default
+    """
+    v = os.getenv(key)
+    if v not in (None, ""):
+        return v
+    try:
+        if section:
+            sect = st.secrets.get(section, {})
+            if isinstance(sect, dict) and key in sect and sect[key]:
+                return sect[key]
+        # fall back to flat top-level secret
+        v2 = st.secrets.get(key, default)
+        return v2 if v2 not in ("", None) else default
+    except Exception:
+        return default
 
-if not all([S3_REGION, S3_BUCKET, S3_KEY, S3_SECRET]):
-    raise RuntimeError("Missing RUNPOD_S3_REGION / RUNPOD_S3_BUCKET / RUNPOD_S3_ACCESS_KEY / RUNPOD_S3_SECRET_KEY")
+def _require(name: str, value: Optional[str]):
+    if not value:
+        st.error(f"Missing secret: **{name}**. Add it in `.streamlit/secrets.toml` or in **App → Settings → Secrets**.")
+        st.stop()
 
-RUNPOD_API_KEY   = os.getenv("RUNPOD_API_KEY")
-RUNPOD_ENDPOINT  = os.getenv("RUNPOD_ENDPOINT_ID")
-RUN_URL          = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/run" if RUNPOD_ENDPOINT else ""
-STATUS_URL_BASE  = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/status/" if RUNPOD_ENDPOINT else ""
-DEFAULT_HEADERS  = lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+# =========================================================
+# Read secrets (supports both flat keys and [runpod_s3] group)
+# =========================================================
+RUNPOD_API_KEY   = _sget("RUNPOD_API_KEY")
+RUNPOD_ENDPOINT  = _sget("RUNPOD_ENDPOINT_ID")
+
+# S3: try grouped first, then flat
+S3_REGION = _sget("RUNPOD_S3_REGION", section="runpod_s3") or _sget("RUNPOD_S3_REGION")
+S3_BUCKET = _sget("RUNPOD_S3_BUCKET", section="runpod_s3") or _sget("RUNPOD_S3_BUCKET")
+S3_KEY    = _sget("RUNPOD_S3_ACCESS_KEY", section="runpod_s3") or _sget("RUNPOD_S3_ACCESS_KEY")
+S3_SECRET = _sget("RUNPOD_S3_SECRET_KEY", section="runpod_s3") or _sget("RUNPOD_S3_SECRET_KEY")
+
+# Fail fast with a helpful UI message instead of crashing the app
+for k, v in {
+    "RUNPOD_API_KEY": RUNPOD_API_KEY,
+    "RUNPOD_ENDPOINT_ID": RUNPOD_ENDPOINT,
+    "RUNPOD_S3_REGION": S3_REGION,
+    "RUNPOD_S3_BUCKET": S3_BUCKET,
+    "RUNPOD_S3_ACCESS_KEY": S3_KEY,
+    "RUNPOD_S3_SECRET_KEY": S3_SECRET,
+}.items():
+    _require(k, v)
+
+RUN_URL         = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/run"
+STATUS_URL_BASE = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/status/"
+DEFAULT_HEADERS = lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
 
 # =========================================================
 # Page + styles (set_page_config must be first Streamlit call)
