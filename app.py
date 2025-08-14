@@ -6,6 +6,7 @@ import mimetypes
 import time
 import json
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -176,6 +177,10 @@ def _slugify_name(name: str) -> str:
     base = "".join(c if c.isalnum() or c in ("-", "_") else "-" for c in base)
     return base.strip("-_") or f"file-{uuid.uuid4().hex[:8]}"
 
+def _slugify_user(name: str) -> str:
+    base = "".join(c if c.isalnum() or c in ("-", "_") else "-" for c in (name or "user"))
+    return base.strip("-_") or f"user-{uuid.uuid4().hex[:6]}"
+
 def save_transcription_assets(
     job_id: str,
     filename: str,
@@ -241,6 +246,30 @@ def save_transcription_assets(
         written["txt"] = f"s3://{S3_BUCKET}/{txt_key}"
 
     return written
+
+def save_feedback_to_s3(filename: str, user_name: str, feedback: str, job_id: Optional[str] = None) -> str:
+    """
+    Stores feedback as JSON to: feedback/<slug(filename)>-<slug(username)>
+    Returns the s3:// URI that was written.
+    """
+    fname_slug = _slugify_name(filename)
+    user_slug  = _slugify_user(user_name)
+    key = f"feedback/{fname_slug}-{user_slug}"   # no extension, per requested path
+
+    body = {
+        "job_id": job_id,
+        "filename": filename,
+        "username": user_name,
+        "feedback": feedback,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    s3_upload_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=key,
+        Body=json.dumps(body, ensure_ascii=False, indent=2).encode("utf-8"),
+        ContentType="application/json; charset=utf-8"
+    )
+    return f"s3://{S3_BUCKET}/{key}"
 
 # ---------- Bootstrap existing transcriptions from S3 ----------
 def _safe_json_load(b: bytes) -> dict:
@@ -426,8 +455,6 @@ def run_and_store(payload: Dict[str, Any], filename_for_list: str, ui_area: Opti
         area.warning(f"Could not save transcription assets to RunPod S3: {e}")
         saved_paths = None
 
-    
-
     # Navigate to details
     st.session_state.view = "detail"
 
@@ -540,8 +567,6 @@ def page_home():
     st.title("🗂️ Transcribed Files")
     st.markdown("Click an audio filename to view its transcription details.\n")
 
-    
-
     items = sorted(st.session_state.jobs.items(), key=lambda kv: kv[1]["created_at"], reverse=True)
 
     # Wrap the grid so our CSS targets only these buttons
@@ -590,11 +615,7 @@ def page_detail():
                 out = loaded
                 st.session_state.jobs[job_id]["output"] = out  # cache
 
-    # st.title(f"📄 {filename}")
     st.markdown("<br>", unsafe_allow_html=True)
-    
-
-
 
     # Back arrow + title in one row
     col1, col2 = st.columns([0.07, 0.93])
@@ -626,12 +647,6 @@ def page_detail():
     with col2:
         st.markdown(f"<h1 style='margin: 0; padding: 0;'>📄 {filename}</h1>", unsafe_allow_html=True)
 
-
-
-
-   
-
-
     st.caption(f"Status: {status}")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -654,7 +669,29 @@ def page_detail():
             st.text_area("SRT preview", value=srt_content, height=desired_height)
             st.download_button("⬇️ Download SRT", data=srt_content, file_name=f"{os.path.splitext(filename)[0]}.srt", mime="text/plain")
 
-    
+    # =========================
+    # 💬 Feedback Form
+    # =========================
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("💬 Leave Feedback")
+
+    with st.form("feedback_form", clear_on_submit=True):
+        st.text_input("Audio file name", value=filename, disabled=True)
+        fb_user = st.text_input("Your name", placeholder="Enter your name", max_chars=80)
+        fb_text = st.text_area("Feedback", placeholder="Write your feedback here...", height=140)
+        submitted = st.form_submit_button("Submit Feedback")
+
+    if submitted:
+        if not fb_user.strip():
+            st.warning("Please enter your name before submitting.")
+        elif not fb_text.strip():
+            st.warning("Please write some feedback before submitting.")
+        else:
+            try:
+                uri = save_feedback_to_s3(filename=filename, user_name=fb_user.strip(), feedback=fb_text.strip(), job_id=job_id)
+                st.success(f"Thanks! Your feedback was saved")
+            except Exception as e:
+                st.error(f"Could not save feedback: {e}")
 
     st.divider()
     cols = st.columns(2)
