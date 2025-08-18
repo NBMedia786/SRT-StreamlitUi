@@ -486,7 +486,7 @@ if uploaded is not None:
 
 # Options
 st.sidebar.subheader("Transcription Options")
-vad_filter = st.sidebar.selectbox("VAD filter", [False, True], index=0)
+vad_filter = st.sidebar.selectbox("VAD filter", [False, True], index=1)
 max_words_per_line = st.sidebar.number_input(
     "Max words per SRT line", min_value=3, max_value=12, value=7, step=1
 )
