@@ -458,6 +458,25 @@ def run_and_store(payload: Dict[str, Any], filename_for_list: str, ui_area: Opti
     # Navigate to details
     st.session_state.view = "detail"
 
+def _options_for_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Tries to read options (vad_filter, max_words_per_line, etc.)
+    from the saved meta.json for this job. Falls back to empty dict.
+    """
+    try:
+        saved = job.get("saved_paths") or {}
+        meta_uri = saved.get("meta")
+        if not meta_uri:
+            return {}
+        meta_key = _key_from_uri(meta_uri)   # s3://bucket/path -> path
+        meta = _read_s3_json(S3_BUCKET, meta_key)
+        if isinstance(meta, dict):
+            return meta.get("options") or {}
+    except Exception:
+        pass
+    return {}
+
+
 # =========================================================
 # Bootstrap from S3 on first load
 # =========================================================
@@ -647,8 +666,27 @@ def page_detail():
     with col2:
         st.markdown(f"<h1 style='margin: 0; padding: 0;'>📄 {filename}</h1>", unsafe_allow_html=True)
 
+   
+
+
     st.caption(f"Status: {status}")
+
+    opts = _options_for_job(job)
+    vad_used   = opts.get("vad_filter", None)
+    words_used = opts.get("max_words_per_line", None)
+
+    # Show a compact row of the settings that were actually used
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption(f"VAD filter: **{'On' if vad_used else 'Off' if vad_used is not None else '—'}**")
+    with c2:
+        st.caption(f"Words per line: **{words_used if words_used is not None else '—'}**")
+
     st.markdown("<br>", unsafe_allow_html=True)
+
+
+
+
 
     if out.get("txt"):
         with st.container():
