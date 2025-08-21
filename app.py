@@ -18,8 +18,7 @@ from botocore.exceptions import EndpointConnectionError, ClientError
 # =========================================================
 # Secrets loader (works with .env locally and st.secrets on Cloud)
 # =========================================================
-load_dotenv()  # safe no-op on Cloud
-
+load_dotenv()  
 def _sget(key: str, default: Optional[str] = None, section: Optional[str] = None) -> Optional[str]:
     """
     Priority:
