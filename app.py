@@ -61,7 +61,6 @@ S3_REGION = _sget("RUNPOD_S3_REGION", section="runpod_s3") or _sget("RUNPOD_S3_R
 S3_BUCKET = _sget("RUNPOD_S3_BUCKET", section="runpod_s3") or _sget("RUNPOD_S3_BUCKET")
 S3_KEY    = _sget("RUNPOD_S3_ACCESS_KEY", section="runpod_s3") or _sget("RUNPOD_S3_ACCESS_KEY")
 S3_SECRET = _sget("RUNPOD_S3_SECRET_KEY", section="runpod_s3") or _sget("RUNPOD_S3_SECRET_KEY")
-
 # Fail fast with a helpful UI message instead of crashing the app
 for k, v in {
     "RUNPOD_API_KEY": RUNPOD_API_KEY,
@@ -808,6 +807,15 @@ def details_main_area():
         st.rerun()
     if cols[1].button("🔁 Refresh this page", use_container_width=True):
         st.rerun()
+
+
+
+
+
+    
+
+    
+
 
 # # =========================================================
 # # Pages (Detail page unchanged visually)
