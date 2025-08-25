@@ -503,8 +503,12 @@ def _options_for_job(job: Dict[str, Any]) -> Dict[str, Any]:
 # =========================================================
 if "bootstrapped" not in st.session_state:
     try:
+        start_time = time.time()
         with st.spinner("Loading library from RunPod storage…"):
             list_existing_transcriptions()
+            end_time = time.time()
+            elapsed = end_time - start_time
+            st.sidebar.info(f"⏱️ Page load time: {elapsed:.2f} seconds")
     finally:
         st.session_state.bootstrapped = True
 
