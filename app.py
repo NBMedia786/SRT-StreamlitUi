@@ -1,6 +1,3 @@
-# // name field added
-#improved UI
-# // change the storage to Srt-model/
 
 import os
 import io
@@ -9,7 +6,7 @@ import socket
 import mimetypes
 import time
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -39,7 +36,6 @@ def _sget(key: str, default: Optional[str] = None, section: Optional[str] = None
             sect = st.secrets.get(section, {})
             if isinstance(sect, dict) and key in sect and sect[key]:
                 return sect[key]
-        # fall back to flat top-level secret
         v2 = st.secrets.get(key, default)
         return v2 if v2 not in ("", None) else default
     except Exception:
@@ -61,6 +57,7 @@ S3_REGION = _sget("RUNPOD_S3_REGION", section="runpod_s3") or _sget("RUNPOD_S3_R
 S3_BUCKET = _sget("RUNPOD_S3_BUCKET", section="runpod_s3") or _sget("RUNPOD_S3_BUCKET")
 S3_KEY    = _sget("RUNPOD_S3_ACCESS_KEY", section="runpod_s3") or _sget("RUNPOD_S3_ACCESS_KEY")
 S3_SECRET = _sget("RUNPOD_S3_SECRET_KEY", section="runpod_s3") or _sget("RUNPOD_S3_SECRET_KEY")
+
 # Fail fast with a helpful UI message instead of crashing the app
 for k, v in {
     "RUNPOD_API_KEY": RUNPOD_API_KEY,
@@ -79,27 +76,24 @@ DEFAULT_HEADERS = lambda key: {"Authorization": f"Bearer {key}", "Content-Type":
 # =========================================================
 # Page + styles (set_page_config must be first Streamlit call)
 # =========================================================
-st.set_page_config(page_title="SRT Generator ", page_icon="🎧", layout="wide", initial_sidebar_state="expanded",)
+st.set_page_config(page_title="SRT Generator", page_icon="🎧", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-# button[aria-label="Hide sidebar"],
-# button[aria-label="Show sidebar"],
-# [data-testid="collapsedControl"],
-# [data-testid="stSidebarCollapseButton"] { display: none !important; }
+/* SHOW the sidebar toggles (do NOT hide them) */
+/* (no rules here that target [data-testid="collapsedControl"]
+    or [data-testid="stSidebarCollapseButton"]) */
 
-# section[data-testid="stSidebar"] { transform: none !important; visibility: visible !important; opacity: 1 !important; }
-# @media (max-width: 1200px) { section[data-testid="stSidebar"] { position: sticky !important; left: 0 !important; } }
-# section[data-testid="stSidebar"] { min-width: 280px; max-width: 3200px; }
+/* Sidebar width */
+# section[data-testid="stSidebar"] { min-width: 280px; max-width: 320px; }
 
 /* File grid buttons */
-# file-list button[data-baseweb="button"]{
-    height: 70px !important; border-radius: 18px !important; font-weight: 700 !important; font-size: 20px !important;
+#file-list button[data-baseweb="button"]{
+    height: 64px !important; border-radius: 14px !important; font-weight: 700 !important; font-size: 18px !important;
     letter-spacing: .2px; border: 1px solid rgba(207,211,218,0.25) !important; background: transparent !important;
     margin: 6px 0 !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-
-# file-list div[data-testid="baseButton-secondary"]{ width: 100% !important; }
+#file-list div[data-testid="baseButton-secondary"]{ width: 100% !important; }
 
 /* Theme tweaks */
 :root{ --page-bg:#0f1116; --card-bg:#1e2229; --card-br:#2a2f37; --muted:#9aa4b2; }
@@ -108,35 +102,63 @@ st.markdown("""
        box-shadow:0 12px 32px rgba(0,0,0,.35); margin-bottom:16px; }
 .card .stButton>button{ width:100%; height:40px; border-radius:10px; }
 .card label, .card .stMarkdown p { color: var(--muted); }
+
+/* “Load more” button styling */
+.load-more-btn button{
+    background: linear-gradient(90deg, #4e54c8, #8f94fb) !important;
+    color: #b4c480 !important;
+    border: none !important;
+    font-weight: 700 !important;
+    font-size: 16px !important;
+    border-radius: 12px !important;
+    height: 50px !important;
+    margin-top: 10px !important;
+    box-shadow: 0 6px 16px rgba(78,84,200,0.35);
+    transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
+}
+.load-more-btn button:hover{
+    transform: translateY(-1px) scale(1.02);
+    box-shadow: 0 10px 22px rgba(78,84,200,0.45);
+    filter: brightness(1.03);
+    color: #b4c480 !important;
+}
+.load-more-btn button:active{
+    transform: translateY(0);
+    box-shadow: 0 4px 12px rgba(78,84,200,0.35);
+}
+.load-more-btn div[data-testid="baseButton-secondary"]{ width: 100% !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
 # Session state (router + data)
 # =========================================================
-if "view" not in st.session_state:
-    st.session_state.view = "home"  # "home" | "detail"
-if "active_job" not in st.session_state:
-    st.session_state.active_job = None  # job_id
-if "jobs" not in st.session_state:
-    st.session_state.jobs = {}
-if "UPLOADED_FILE" not in st.session_state:
-    st.session_state.UPLOADED_FILE = None
-if "RUNPOD_OBJECT_KEY" not in st.session_state:
-    st.session_state.RUNPOD_OBJECT_KEY = None
-# editor name default – create BEFORE any widgets
-if "editor_name" not in st.session_state:
-    st.session_state.editor_name = ""
+ss = st.session_state
+ss.setdefault("view", "home")                 # "home" | "detail"
+ss.setdefault("active_job", None)             # job_id
+ss.setdefault("jobs", {})
+ss.setdefault("UPLOADED_FILE", None)
+ss.setdefault("RUNPOD_OBJECT_KEY", None)
+ss.setdefault("editor_name", "")
+
+# FAST SIDEBAR state
+ss.setdefault("library_page_size", 10)
+ss.setdefault("library_index", None)          # list of entries from _index.json (most recent first)
+ss.setdefault("library_index_offset", 0)      # how many currently shown (10, 20, ...)
+ss.setdefault("library_list_mode", "index")   # "index" | "listing" (fallback)
+ss.setdefault("listing_next_token", None)     # S3 continuation token
+ss.setdefault("listing_cache_prefixes", [])   # CommonPrefixes cache during fallback
+ss.setdefault("display_name_cache", {})       # base_dir -> pretty filename (from meta.json)
 
 # =========================================================
-# S3 helpers
+# S3 helpers & constants
 # =========================================================
-
-# ---------- Unified S3 prefixes ----------
 ROOT_PREFIX           = "Srt-model/"
 UPLOAD_PREFIX         = f"{ROOT_PREFIX}uploads/"
 TRANSCRIPTIONS_PREFIX = f"{ROOT_PREFIX}transcriptions/"
 FEEDBACK_PREFIX       = f"{ROOT_PREFIX}feedback/"
+LEGACY_TRANS_PREFIX   = "transcriptions/"
+INDEX_KEY             = f"{TRANSCRIPTIONS_PREFIX}_index.json"  # {"entries":[{job_id,filename,base_dir,created_at,status}]}
 
 def _canonical_path_endpoint(region: str) -> str:
     return f"https://s3api-{region}.runpod.io"
@@ -151,7 +173,7 @@ UPLOAD_ENDPOINT = _canonical_path_endpoint(S3_REGION)
 if not _dns_ok(UPLOAD_ENDPOINT.replace("https://", "")):
     raise RuntimeError(f"DNS cannot resolve {UPLOAD_ENDPOINT}. Check DNS/network.")
 
-s3_upload_client = boto3.client(
+s3 = boto3.client(
     "s3",
     region_name=S3_REGION,
     endpoint_url=UPLOAD_ENDPOINT,
@@ -160,6 +182,118 @@ s3_upload_client = boto3.client(
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
 
+# ---------- JSON helpers ----------
+def _safe_json_load(b: bytes) -> dict:
+    try:
+        return json.loads(b.decode("utf-8"))
+    except Exception:
+        try:
+            return json.loads(b)
+        except Exception:
+            return {}
+
+def _read_s3_json(bucket: str, key: str) -> dict:
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return _safe_json_load(obj["Body"].read())
+    except Exception:
+        return {}
+
+def _write_s3_json(bucket: str, key: str, data: dict):
+    s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), ContentType="application/json")
+
+def _read_s3_text(bucket: str, key: str) -> Optional[str]:
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return obj["Body"].read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+def _key_from_uri(uri: str) -> str:
+    return uri.split("/", 3)[-1] if uri.startswith("s3://") else uri
+
+def _basename_from_filename(filename: str) -> str:
+    return os.path.splitext(os.path.basename(filename))[0]
+
+def _saved_paths_from_base_dir(base_dir: str, filename: str) -> Dict[str, str]:
+    basename = _basename_from_filename(filename)
+    return {
+        "meta":        f"s3://{S3_BUCKET}/{base_dir}/meta.json",
+        "output_json": f"s3://{S3_BUCKET}/{base_dir}/output.json",
+        "srt":         f"s3://{S3_BUCKET}/{base_dir}/{basename}.srt",
+        "txt":         f"s3://{S3_BUCKET}/{base_dir}/{basename}.txt",
+    }
+
+def _parse_job_id_from_base_dir(base_dir_tail: str) -> str:
+    return base_dir_tail.rsplit("_", 1)[-1] if "_" in base_dir_tail else base_dir_tail
+
+# ---------- FAST INDEX ----------
+def _read_index() -> List[dict]:
+    data = _read_s3_json(S3_BUCKET, INDEX_KEY)
+    entries = data.get("entries") if isinstance(data, dict) else None
+    return entries if isinstance(entries, list) else []
+
+def _index_add_entry(entry: dict, cap: int = 1000):
+    """Append/Upsert latest entry on top; cap length."""
+    data = _read_s3_json(S3_BUCKET, INDEX_KEY) or {}
+    entries: List[dict] = data.get("entries") or []
+    jid = entry.get("job_id")
+    entries = [e for e in entries if e.get("job_id") != jid]
+    entries.insert(0, entry)
+    if len(entries) > cap:
+        entries = entries[:cap]
+    _write_s3_json(S3_BUCKET, INDEX_KEY, {"entries": entries})
+
+# ---------- DISPLAY NAME HELPERS (exact filename for visible items) ----------
+def _list_objects_once(prefix: str, max_keys: int = 50):
+    try:
+        resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix, MaxKeys=max_keys)
+        return resp.get("Contents", []) or []
+    except Exception:
+        return []
+
+def _get_display_name_from_meta(base_dir: str) -> Optional[str]:
+    try:
+        meta = _read_s3_json(S3_BUCKET, f"{base_dir}/meta.json")
+        if isinstance(meta, dict):
+            fn = meta.get("filename")
+            if isinstance(fn, str) and fn.strip():
+                return fn.strip()
+    except Exception:
+        pass
+    return None
+
+def _guess_name_from_folder(base_dir: str) -> Optional[str]:
+    """Fallback for very old archives without meta.json: use any .srt/.txt basename."""
+    contents = _list_objects_once(prefix=f"{base_dir}/", max_keys=50)
+    for ext in (".srt", ".txt"):
+        for obj in contents:
+            key = obj.get("Key", "")
+            if key.lower().endswith(ext):
+                name = os.path.basename(key)
+                return os.path.splitext(name)[0]
+    return None
+
+def _get_pretty_display_name(base_dir: str, default_tail: str) -> str:
+    if not base_dir:
+        return default_tail
+    cache = ss.display_name_cache
+    if base_dir in cache:
+        return cache[base_dir]
+    fn = _get_display_name_from_meta(base_dir)
+    if fn:
+        cache[base_dir] = fn
+        return fn
+    guess = _guess_name_from_folder(base_dir)
+    if guess:
+        cache[base_dir] = guess
+        return guess
+    cache[base_dir] = default_tail
+    return default_tail
+
+# =========================================================
+# Uploading & saving artifacts
+# =========================================================
 def upload_audio_and_get_paths(file_bytes: bytes, original_filename: str) -> Dict[str, Any]:
     guessed = mimetypes.guess_type(original_filename)[0]
     ext = (original_filename.rsplit(".", 1)[-1] if "." in original_filename else "").lower()
@@ -168,9 +302,7 @@ def upload_audio_and_get_paths(file_bytes: bytes, original_filename: str) -> Dic
     object_key = f"{UPLOAD_PREFIX}{uuid.uuid4()}_{safe_name}"
 
     try:
-        s3_upload_client.put_object(
-            Bucket=S3_BUCKET, Key=object_key, Body=file_bytes, ContentType=content_type
-        )
+        s3.put_object(Bucket=S3_BUCKET, Key=object_key, Body=file_bytes, ContentType=content_type)
     except EndpointConnectionError as e:
         raise RuntimeError(f"Could not reach RunPod S3 endpoint {UPLOAD_ENDPOINT}: {e}")
     except ClientError as e:
@@ -185,7 +317,6 @@ def upload_audio_and_get_paths(file_bytes: bytes, original_filename: str) -> Dic
         "region": S3_REGION,
     }
 
-# ---------- Save transcription assets ----------
 def _slugify_name(name: str) -> str:
     base = os.path.splitext(name)[0]
     base = "".join(c if c.isalnum() or c in ("-", "_") else "-" for c in base)
@@ -204,16 +335,15 @@ def save_transcription_assets(
 ) -> Dict[str, str]:
     """
     Saves SRT/TXT + meta/output JSON to:
-      transcriptions/{slug}_{job_id}/
+      Srt-model/transcriptions/{slug}_{job_id}/
+    Also updates the fast _index.json.
     Returns dict of s3:// URIs that were written.
     """
     written = {}
     slug = _slugify_name(filename)
     base_dir = f"{TRANSCRIPTIONS_PREFIX}{slug}_{job_id}"
-
     basename = os.path.splitext(filename)[0]
 
-    
     meta = {
         "job_id": job_id,
         "filename": filename,
@@ -228,43 +358,54 @@ def save_transcription_assets(
         },
     }
     meta_key = f"{base_dir}/meta.json"
-    s3_upload_client.put_object(
+    s3.put_object(
         Bucket=S3_BUCKET, Key=meta_key, Body=json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"),
         ContentType="application/json"
     )
     written["meta"] = f"s3://{S3_BUCKET}/{meta_key}"
 
-
     out_key = f"{base_dir}/output.json"
-    s3_upload_client.put_object(
+    s3.put_object(
         Bucket=S3_BUCKET, Key=out_key, Body=json.dumps(output or {}, ensure_ascii=False, indent=2).encode("utf-8"),
         ContentType="application/json"
     )
     written["output_json"] = f"s3://{S3_BUCKET}/{out_key}"
 
-
     if isinstance(output.get("srt"), str) and output["srt"].strip():
         srt_key = f"{base_dir}/{basename}.srt"
-        s3_upload_client.put_object(
+        s3.put_object(
             Bucket=S3_BUCKET, Key=srt_key, Body=output["srt"].encode("utf-8"),
             ContentType="text/plain; charset=utf-8"
         )
         written["srt"] = f"s3://{S3_BUCKET}/{srt_key}"
 
-    
     if isinstance(output.get("txt"), str) and output["txt"].strip():
         txt_key = f"{base_dir}/{basename}.txt"
-        s3_upload_client.put_object(
+        s3.put_object(
             Bucket=S3_BUCKET, Key=txt_key, Body=output["txt"].encode("utf-8"),
             ContentType="text/plain; charset=utf-8"
         )
         written["txt"] = f"s3://{S3_BUCKET}/{txt_key}"
 
+    # --- update fast index (most-recent-first) ---
+    try:
+        _index_add_entry({
+            "job_id": job_id,
+            "filename": filename,
+            "base_dir": base_dir,
+            "created_at": job_record.get("created_at") or time.time(),
+            "status": job_record.get("status", "COMPLETED"),
+        })
+        # cache the nice name too
+        ss.display_name_cache[base_dir] = filename
+    except Exception as e:
+        st.warning(f"Index update failed (non-blocking): {e}")
+
     return written
 
 def save_feedback_to_s3(filename: str, user_name: str, feedback: str, job_id: Optional[str] = None) -> str:
     """
-    Stores feedback as JSON to: feedback/<slug(filename)>-<slug(username)>
+    Stores feedback as JSON to: Srt-model/feedback/<slug(filename)>-<slug(username)>
     Returns the s3:// URI that was written.
     """
     fname_slug = _slugify_name(filename)
@@ -278,98 +419,13 @@ def save_feedback_to_s3(filename: str, user_name: str, feedback: str, job_id: Op
         "feedback": feedback,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    s3_upload_client.put_object(
+    s3.put_object(
         Bucket=S3_BUCKET,
         Key=key,
         Body=json.dumps(body, ensure_ascii=False, indent=2).encode("utf-8"),
         ContentType="application/json; charset=utf-8"
     )
     return f"s3://{S3_BUCKET}/{key}"
-
-# ---------- Bootstrap existing transcriptions from S3 ----------
-def _safe_json_load(b: bytes) -> dict:
-    try:
-        return json.loads(b.decode("utf-8"))
-    except Exception:
-        try:
-            return json.loads(b)
-        except Exception:
-            return {}
-
-def _read_s3_text(bucket: str, key: str) -> Optional[str]:
-    try:
-        obj = s3_upload_client.get_object(Bucket=bucket, Key=key)
-        return obj["Body"].read().decode("utf-8", errors="ignore")
-    except Exception:
-        return None
-
-def _read_s3_json(bucket: str, key: str) -> dict:
-    try:
-        obj = s3_upload_client.get_object(Bucket=bucket, Key=key)
-        return _safe_json_load(obj["Body"].read())
-    except Exception:
-        return {}
-
-def _basename_from_filename(filename: str) -> str:
-    return os.path.splitext(os.path.basename(filename))[0]
-
-def _saved_paths_from_base_dir(base_dir: str, filename: str) -> Dict[str, str]:
-    basename = _basename_from_filename(filename)
-    return {
-        "meta":        f"s3://{S3_BUCKET}/{base_dir}/meta.json",
-        "output_json": f"s3://{S3_BUCKET}/{base_dir}/output.json",
-        "srt":         f"s3://{S3_BUCKET}/{base_dir}/{basename}.srt",
-        "txt":         f"s3://{S3_BUCKET}/{base_dir}/{basename}.txt",
-    }
-
-def _key_from_uri(uri: str) -> str:
-    return uri.split("/", 3)[-1] if uri.startswith("s3://") else uri
-
-def list_existing_transcriptions(limit: int = 1000) -> None:
-    """
-    Scans both new and legacy locations for transcriptions and seeds session state.
-    New:  Srt-model/transcriptions/**/meta.json
-    Old:  transcriptions/**/meta.json
-    """
-    prefixes_to_scan = [TRANSCRIPTIONS_PREFIX, "transcriptions/"]  
-    paginator = s3_upload_client.get_paginator("list_objects_v2")
-    seen = 0
-
-    for prefix in prefixes_to_scan:
-        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if not key.endswith("/meta.json"):
-                    continue
-
-                base_dir = key.rsplit("/", 1)[0]
-                meta = _read_s3_json(S3_BUCKET, key)
-                if not meta:
-                    continue
-
-                job_id   = str(meta.get("job_id") or base_dir.rsplit("_", 1)[-1])
-                filename = meta.get("filename") or base_dir.split("/")[-1]
-                status   = meta.get("status", "COMPLETED")
-                created_at = meta.get("created_at") or (obj.get("LastModified").timestamp() if obj.get("LastModified") else time.time())
-
-                source_bucket = meta.get("source_bucket", S3_BUCKET)
-                source_key    = meta.get("source_key", "")
-
-                saved_paths = _saved_paths_from_base_dir(base_dir, filename)
-
-                st.session_state.jobs[job_id] = {
-                    "filename": filename,
-                    "bucket": source_bucket,
-                    "key": source_key,
-                    "status": status,
-                    "output": None,
-                    "created_at": created_at,
-                    "saved_paths": saved_paths,
-                }
-
-                seen += 1
-                if seen >= limit:
-                    return
 
 # =========================================================
 # RunPod helpers
@@ -382,27 +438,8 @@ def submit_job(job_input: Dict[str, Any]) -> Dict[str, Any]:
     r.raise_for_status()
     return r.json()
 
-def poll_status(job_id: str, status_placeholder, poll_interval: float = 2.0, max_wait_sec: int = 1200):
-    """(kept for reference; not used in the fast flow)"""
-    url = STATUS_URL_BASE + job_id
-    start = time.time()
-    last_status = None
-    with st.spinner("Processing transcription..."):
-        while True:
-            r = requests.get(url, headers=DEFAULT_HEADERS(RUNPOD_API_KEY), timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            status = data.get("status")
-            if status != last_status:
-                last_status = status
-            if status in ("COMPLETED", "FAILED", "CANCELLED"):
-                return data
-            if time.time() - start > max_wait_sec:
-                raise TimeoutError("Status polling timed out.")
-            time.sleep(poll_interval)
-
 def record_job(job_id: str, filename: str, bucket: str, key: str):
-    st.session_state.jobs[job_id] = {
+    ss.jobs[job_id] = {
         "filename": filename,
         "bucket": bucket,
         "key": key,
@@ -410,15 +447,15 @@ def record_job(job_id: str, filename: str, bucket: str, key: str):
         "output": None,
         "created_at": time.time(),
         "saved_paths": None,
-        "pending_options": None, 
+        "pending_options": None,
+        # "base_dir" will be filled after completion (when assets saved)
     }
 
 def update_job(job_id: str, status: str, output: Optional[dict]):
-    if job_id in st.session_state.jobs:
-        st.session_state.jobs[job_id]["status"] = status
-        st.session_state.jobs[job_id]["output"] = output
+    if job_id in ss.jobs:
+        ss.jobs[job_id]["status"] = status
+        ss.jobs[job_id]["output"] = output
 
-# ---------- NEW: ping status once per render ----------
 def refresh_status_once(job_id: str) -> Optional[dict]:
     try:
         url = STATUS_URL_BASE + job_id
@@ -429,9 +466,9 @@ def refresh_status_once(job_id: str) -> Optional[dict]:
         out = data.get("output") or {}
         update_job(job_id, status, out)
 
-        
+        # On completion, persist artifacts (also updates index)
         if status in ("COMPLETED", "FAILED", "CANCELLED"):
-            job = st.session_state.jobs.get(job_id, {})
+            job = ss.jobs.get(job_id, {})
             if job and not job.get("saved_paths"):
                 options = job.get("pending_options") or {}
                 try:
@@ -442,15 +479,17 @@ def refresh_status_once(job_id: str) -> Optional[dict]:
                         output=out if isinstance(out, dict) else {},
                         options=options
                     )
-                    st.session_state.jobs[job_id]["saved_paths"] = saved_paths
+                    ss.jobs[job_id]["saved_paths"] = saved_paths
+                    # capture base_dir for quick hydrate later
+                    meta_key = _key_from_uri(saved_paths["meta"])
+                    base_dir = meta_key.rsplit("/", 1)[0]
+                    ss.jobs[job_id]["base_dir"] = base_dir
                 except Exception as e:
                     st.warning(f"Could not save transcription assets to RunPod S3: {e}")
-
         return data
     except Exception:
         return None
 
-# ---------- CHANGED: submit → redirect immediately (no blocking) ----------
 def run_and_store(payload: Dict[str, Any], filename_for_list: str, ui_area: Optional[st.delta_generator.DeltaGenerator] = None):
     area = ui_area or st
     with st.spinner("Submitting job..."):
@@ -461,36 +500,27 @@ def run_and_store(payload: Dict[str, Any], filename_for_list: str, ui_area: Opti
         area.warning("No job id found in response.")
         return
 
-    
     record_job(job_id, filename_for_list, payload["bucket"], payload["key"])
-    st.session_state.jobs[job_id]["pending_options"] = {
+    ss.jobs[job_id]["pending_options"] = {
         "language": payload.get("language"),
         "vad_filter": payload.get("vad_filter"),
         "max_words_per_line": payload.get("max_words_per_line"),
         "generate_srt": payload.get("generate_srt"),
         "generate_txt": payload.get("generate_txt"),
         "extension": payload.get("extension"),
-        
-        "editor_name": st.session_state.get("editor_name", "").strip(),
+        "editor_name": ss.get("editor_name", "").strip(),
     }
-    st.session_state.active_job = job_id
-
-  
-    st.session_state.view = "detail"
+    ss.active_job = job_id
+    ss.view = "detail"
     st.rerun()
-    return
 
 def _options_for_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Tries to read options (vad_filter, max_words_per_line, etc.)
-    from the saved meta.json for this job. Falls back to empty dict.
-    """
     try:
         saved = job.get("saved_paths") or {}
         meta_uri = saved.get("meta")
         if not meta_uri:
             return {}
-        meta_key = _key_from_uri(meta_uri)   
+        meta_key = _key_from_uri(meta_uri)
         meta = _read_s3_json(S3_BUCKET, meta_key)
         if isinstance(meta, dict):
             return meta.get("options") or {}
@@ -499,36 +529,189 @@ def _options_for_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 # =========================================================
-# Bootstrap from S3 on first load
+# LAZY HYDRATE when opening a job
 # =========================================================
-if "bootstrapped" not in st.session_state:
-    try:
-        with st.spinner("Loading library from RunPod storage…"):
-            list_existing_transcriptions()
-    finally:
-        st.session_state.bootstrapped = True
+def _ensure_job_hydrated(job_id: str):
+    job = ss.jobs.get(job_id)
+    if not job:
+        return
+    if job.get("saved_paths") and job.get("status") not in (None, "ARCHIVED"):
+        return
+
+    base_dir = job.get("base_dir")
+    filename_guess = job.get("filename") or "transcription"
+
+    if base_dir:
+        meta = _read_s3_json(S3_BUCKET, f"{base_dir}/meta.json")
+        if meta:
+            filename   = meta.get("filename") or filename_guess
+            status     = meta.get("status", "COMPLETED")
+            created_at = meta.get("created_at") or job.get("created_at") or time.time()
+            bucket     = meta.get("source_bucket", S3_BUCKET)
+            source_key = meta.get("source_key", job.get("key", ""))
+
+            ss.jobs[job_id].update({
+                "filename": filename,
+                "bucket": bucket,
+                "key": source_key,
+                "status": status,
+                "created_at": created_at,
+                "saved_paths": _saved_paths_from_base_dir(base_dir, filename),
+            })
+            # also update display cache
+            ss.display_name_cache[base_dir] = filename
+        else:
+            ss.jobs[job_id].update({
+                "saved_paths": _saved_paths_from_base_dir(base_dir, filename_guess),
+                "status": job.get("status", "ARCHIVED"),
+            })
 
 # =========================================================
-# Swapped Layout: File List in SIDEBAR, Upload+Options on MAIN
+# FAST SIDEBAR: index + fallback listing
 # =========================================================
+def _init_index_if_needed():
+    # Try the O(1) index first
+    if ss.library_index is None:
+        idx = _read_index()
+        if idx:
+            ss.library_index = idx
+            ss.library_list_mode = "index"
+            ss.library_index_offset = 0
+            return
+        # Fallback: show folders via Delimiter (no meta reads)
+        ss.library_index = []
+        ss.library_list_mode = "listing"
+        ss.library_index_offset = 0
+        ss.listing_next_token = None
+        ss.listing_cache_prefixes = []
+        _listing_fetch_next_page()  # prefetch first page
+
+def _listing_fetch_next_page(prefix: str = TRANSCRIPTIONS_PREFIX, max_keys: int = 1000):
+    """Fetch next page of base folders only (fast)."""
+    kwargs = {"Bucket": S3_BUCKET, "Prefix": prefix, "Delimiter": "/", "MaxKeys": max_keys}
+    if ss.listing_next_token:
+        kwargs["ContinuationToken"] = ss.listing_next_token
+    resp = s3.list_objects_v2(**kwargs)
+    cps = [cp["Prefix"].rstrip("/") for cp in resp.get("CommonPrefixes", [])]
+    ss.listing_cache_prefixes.extend(cps)
+    ss.listing_next_token = resp.get("NextContinuationToken", None)
+
 def sidebar_file_library():
-    st.sidebar.title("🗂️Transcribed Files History")
-    items = sorted(st.session_state.jobs.items(), key=lambda kv: kv[1]["created_at"], reverse=True)
+    st.sidebar.title("🗂️ Transcribed Files History")
+    _init_index_if_needed()
 
     st.sidebar.markdown('<div id="file-list">', unsafe_allow_html=True)
-    for job_id, job in items:
-        filename = job["filename"]
-        label = filename
-        if job.get("status") == "COMPLETED":
-            label = f"✅ {filename}"
-        elif job.get("status") in {"FAILED", "CANCELLED"}:
-            label = f"❌ {filename}"
-        if st.sidebar.button(label, key=f"lib_{job_id}", use_container_width=True):
-            st.session_state.active_job = job_id
-            st.session_state.view = "detail"
-            st.rerun()
+    page = ss.library_page_size
+
+    if ss.library_list_mode == "index" and ss.library_index:
+        start = 0
+        end = min(len(ss.library_index), ss.library_index_offset + page)
+        items = ss.library_index[start:end]
+
+        for e in items:
+            job_id   = e.get("job_id")
+            base_dir = e.get("base_dir")
+            tail     = (base_dir or "").split("/")[-1] if base_dir else "transcription"
+
+            # If index already carries the exact filename, use it; else resolve lazily for visible item
+            indexed_name = e.get("filename")
+            if not indexed_name:
+                fname = _get_pretty_display_name(base_dir, tail)  # tiny meta.json read
+            else:
+                fname = indexed_name
+                ss.display_name_cache[base_dir] = fname
+
+            # Seed minimal job record
+            if job_id not in ss.jobs:
+                ss.jobs[job_id] = {
+                    "filename": fname,
+                    "bucket": S3_BUCKET,
+                    "key": "",
+                    "status": "ARCHIVED",
+                    "output": None,
+                    "created_at": e.get("created_at") or time.time(),
+                    "saved_paths": None,
+                    "pending_options": None,
+                    "base_dir": base_dir,
+                }
+            else:
+                ss.jobs[job_id]["filename"] = fname
+
+            if st.sidebar.button(fname, key=f"lib_{job_id}", use_container_width=True):
+                _ensure_job_hydrated(job_id)
+                ss.active_job = job_id
+                ss.view = "detail"
+                st.rerun()
+
+        if end < len(ss.library_index):
+            # ---- Load more (INDEX MODE) with special styling ----
+            st.sidebar.markdown('<div class="load-more-btn">', unsafe_allow_html=True)
+            if st.sidebar.button("🔄 Load more", use_container_width=True, key="load_more_index"):
+                st.sidebar.write("Loading more items...")
+                ss.library_index_offset += page
+                st.rerun()
+            st.sidebar.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.sidebar.caption("No more Transaction.")
+            # if st.sidebar.button("Browse older (fallback)", use_container_width=True):
+            #     ss.library_list_mode = "listing"
+            #     st.rerun()
+
+    else:
+        # Fallback listing mode (older items without index)
+        while len(ss.listing_cache_prefixes) < ss.library_index_offset + page and ss.listing_next_token is not None:
+            _listing_fetch_next_page()
+
+        start = 0
+        end = min(len(ss.listing_cache_prefixes), ss.library_index_offset + page)
+        prefixes = ss.listing_cache_prefixes[start:end]
+
+        for pref in prefixes:
+            base_dir = pref
+            tail = base_dir.split("/")[-1]
+            job_id = _parse_job_id_from_base_dir(tail)
+
+            # Show a nice name for just the visible ones
+            fname = _get_pretty_display_name(base_dir, tail)
+
+            if job_id not in ss.jobs:
+                ss.jobs[job_id] = {
+                    "filename": fname,
+                    "bucket": S3_BUCKET,
+                    "key": "",
+                    "status": "ARCHIVED",
+                    "output": None,
+                    "created_at": time.time(),
+                    "saved_paths": None,
+                    "pending_options": None,
+                    "base_dir": base_dir,
+                }
+            else:
+                ss.jobs[job_id]["filename"] = fname
+
+            if st.sidebar.button(fname, key=f"lib_{job_id}", use_container_width=True):
+                _ensure_job_hydrated(job_id)
+                ss.active_job = job_id
+                ss.view = "detail"
+                st.rerun()
+
+        if end < len(ss.listing_cache_prefixes) or ss.listing_next_token is not None:
+            # ---- Load more (FALLBACK MODE) with special styling ----
+            st.sidebar.markdown('<div class="load-more-btn">', unsafe_allow_html=True)
+            if st.sidebar.button("🔄 Load more", use_container_width=True, key="load_more_fallback"):
+                ss.library_index_offset += page
+                if len(ss.listing_cache_prefixes) < ss.library_index_offset + page and ss.listing_next_token is not None:
+                    _listing_fetch_next_page()
+                st.rerun()
+            st.sidebar.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.sidebar.caption("No more items.")
+
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
+# =========================================================
+# Upload + options
+# =========================================================
 def build_payload(_bucket: str, _key: str, _filename_for_ext: Optional[str] = None) -> Dict[str, Any]:
     ext_from_name = ""
     if _filename_for_ext:
@@ -537,8 +720,8 @@ def build_payload(_bucket: str, _key: str, _filename_for_ext: Optional[str] = No
         ext_from_name = os.path.splitext(_key)[1].lstrip(".").lower()
     extension = "wav" if ext_from_name == "wav" else "mp3"
 
-    vad_val = bool(st.session_state.get("vad_filter_main", True))
-    words_val = int(st.session_state.get("max_words_per_line_main", 7))
+    vad_val = bool(ss.get("vad_filter_main", True))
+    words_val = int(ss.get("max_words_per_line_main", 7))
 
     return {
         "bucket": _bucket,
@@ -558,27 +741,21 @@ def home_main_upload_area():
     uploaded = st.file_uploader("Upload .mp3 or .wav", type=["mp3", "wav"], key="audio_uploader_main")
     if uploaded is not None:
         file_bytes = uploaded.read()
-        st.session_state.UPLOADED_FILE = (file_bytes, uploaded.name)
+        ss.UPLOADED_FILE = (file_bytes, uploaded.name)
         st.audio(
             io.BytesIO(file_bytes),
             format="audio/wav" if uploaded.name.lower().endswith(".wav") else "audio/mp3"
         )
 
-    
     st.subheader("Editor")
-    editor_name = st.text_input(
-        "Editor name (required)",
-        value=st.session_state.get("editor_name", ""),
-        key="editor_name"
-    )
+    editor_name = st.text_input("Editor name (required)", value=ss.get("editor_name", ""), key="editor_name")
 
     st.subheader("Transcription Options")
     st.selectbox("VAD filter", [False, True], index=1, key="vad_filter_main")
     st.number_input("Max words per SRT line", min_value=3, max_value=12, value=7, step=1, key="max_words_per_line_main")
 
-    
     name_ok = bool((editor_name or "").strip())
-    can_upload = (st.session_state.UPLOADED_FILE is not None) and name_ok
+    can_upload = (ss.UPLOADED_FILE is not None) and name_ok
 
     if not name_ok:
         st.caption("⚠️ Please enter the editor name to enable transcription.")
@@ -595,31 +772,27 @@ def home_main_upload_area():
                     st.error("Please choose a file above.")
             else:
                 try:
-                    file_bytes, filename = st.session_state.UPLOADED_FILE
+                    file_bytes, filename = ss.UPLOADED_FILE
                     st.markdown("<br><br>", unsafe_allow_html=True)
                     with st.spinner("Uploading to RunPod S3…"):
                         result = upload_audio_and_get_paths(file_bytes, filename)
 
-                    st.session_state.RUNPOD_OBJECT_KEY = result["object_key"]
+                    ss.RUNPOD_OBJECT_KEY = result["object_key"]
                     payload = build_payload(S3_BUCKET, result["object_key"], _filename_for_ext=filename)
-
-                    
                     run_and_store(payload, filename_for_list=filename, ui_area=work_area)
-
                 except requests.HTTPError as e:
                     work_area.error(f"HTTP error: {e}\n\n{e.response.text}" if getattr(e, "response", None) else str(e))
                 except Exception as e:
                     work_area.error(str(e))
 
     with colB:
-        manual_key = st.session_state.RUNPOD_OBJECT_KEY
-        
+        manual_key = ss.RUNPOD_OBJECT_KEY
         if st.button("♻️ Regenerate Transcript", use_container_width=True, disabled=not (bool(manual_key) and name_ok), key="btn_regen_main"):
             try:
                 if not name_ok:
                     work_area.error("Editor name is required.")
                 elif manual_key:
-                    filename = (st.session_state.UPLOADED_FILE[1] if st.session_state.UPLOADED_FILE else os.path.basename(manual_key))
+                    filename = (ss.UPLOADED_FILE[1] if ss.UPLOADED_FILE else os.path.basename(manual_key))
                     payload = build_payload(S3_BUCKET, manual_key, _filename_for_ext=filename)
                     with st.spinner("Submitting job..."):
                         pass
@@ -631,25 +804,21 @@ def home_main_upload_area():
             except Exception as e:
                 work_area.error(str(e))
 
+# =========================================================
+# Detail page
+# =========================================================
 def details_main_area():
 
     def show_fullscreen_spinner():
         st.markdown(
             """
             <style>
-            ._overlay_ {
-              position: fixed; inset: 0;
-              background: transparent;
-              z-index: 9999;
-            }
+            ._overlay_ { position: fixed; inset: 0; background: transparent; z-index: 9999; }
             ._overlay_ ._spinner_ {
               position: absolute; top: 50%; left: 50%;
               transform: translate(-50%, -50%);
-              width: 64px; height: 64px;
-              border: 6px solid rgba(255,255,255,0.25);
-              border-top-color: #fff;
-              border-radius: 50%;
-              animation: _spin_ 1s linear infinite;
+              width: 64px; height: 64px; border: 6px solid rgba(255,255,255,0.25);
+              border-top-color: #fff; border-radius: 50%; animation: _spin_ 1s linear infinite;
             }
             @keyframes _spin_ { to { transform: translate(-50%, -50%) rotate(360deg); } }
             </style>
@@ -658,17 +827,20 @@ def details_main_area():
             unsafe_allow_html=True,
         )
 
-    job_id = st.session_state.active_job
-    if not job_id or job_id not in st.session_state.jobs:
+    job_id = ss.active_job
+    if not job_id or job_id not in ss.jobs:
         st.warning("No job selected. Go back to Home.")
         return
 
-    job = st.session_state.jobs[job_id]
-    filename = job["filename"]
-    status = job["status"]
+    # Ensure we have meta/options/paths for this one item
+    _ensure_job_hydrated(job_id)
+
+    job = ss.jobs[job_id]
+    filename = job.get("filename", "transcription")
+    status = job.get("status", "ARCHIVED")
     out = job.get("output") or {}
 
-    
+    # hydrate output if needed
     if not out:
         saved = job.get("saved_paths") or {}
         out_uri = saved.get("output_json")
@@ -677,63 +849,33 @@ def details_main_area():
             loaded = _read_s3_json(S3_BUCKET, out_key)
             if loaded:
                 out = loaded
-                st.session_state.jobs[job_id]["output"] = out  
+                ss.jobs[job_id]["output"] = out
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<br> <br>", unsafe_allow_html=True)
 
     col1, col2 = st.columns([0.07, 0.93])
     with col1:
-        st.markdown(
-            """
-            <style>
-            .back-btn {
-                background-color: #2e3b4e;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 1.2rem;
-                cursor: pointer;
-                padding: 6px 10px;
-                transition: background-color 0.2s ease;
-            }
-            .back-btn:hover { background-color: #3f5068; }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
         if st.button("←", key="back_to_home", help="Back to Home", use_container_width=True):
-            st.session_state.view = "home"
+            ss.view = "home"
             st.rerun()
-
     with col2:
         st.markdown(f"<h1 style='margin: 0; padding: 0;'>📄 {filename}</h1>", unsafe_allow_html=True)
 
-    
     _ = refresh_status_once(job_id)
-    status = st.session_state.jobs[job_id].get("status", status)
+    status = ss.jobs[job_id].get("status", status)
     st.caption(f"Status: {status}")
 
-    if status not in ("COMPLETED", "FAILED", "CANCELLED"):
+    if status not in ("COMPLETED", "FAILED", "CANCELLED", "ARCHIVED"):
         show_fullscreen_spinner()
-        time.sleep(2)   
+        time.sleep(2)
         st.rerun()
         return
 
-    
-    if not out:
-        saved = job.get("saved_paths") or {}
-        out_uri = saved.get("output_json")
-        if out_uri:
-            out_key = _key_from_uri(out_uri)
-            loaded = _read_s3_json(S3_BUCKET, out_key)
-            if loaded:
-                out = loaded
-                st.session_state.jobs[job_id]["output"] = out
-
+    # Options from meta (if available)
     opts = job.get("pending_options") or _options_for_job(job) or {}
     vad_used    = opts.get("vad_filter", None)
     words_used  = opts.get("max_words_per_line", None)
-    editor_name = (opts.get("editor_name") or "").strip()
+    editor_name = (opts.get("editor_name") or ss.get("editor_name") or "").strip()
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -754,6 +896,7 @@ def details_main_area():
             desired_height = min(2000, max(220, num_lines * line_height))
             st.text_area("TXT preview", value=txt_content, height=desired_height)
             st.download_button("⬇️ Download TXT", data=txt_content, file_name=f"{os.path.splitext(filename)[0]}.txt", mime="text/plain")
+
     if out.get("srt"):
         with st.container():
             st.subheader("📝 Transcript (SRT)")
@@ -770,13 +913,10 @@ def details_main_area():
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("💬 Leave Feedback")
 
-  
-
-    default_fb_name = (opts.get("editor_name") or st.session_state.get("editor_name") or "").strip()
+    default_fb_name = editor_name
 
     with st.form("feedback_form", clear_on_submit=True):
         st.text_input("Audio file name", value=filename, disabled=True)
-       
         fb_user = st.text_input(
             "Your name",
             value=default_fb_name,
@@ -786,7 +926,6 @@ def details_main_area():
         )
         fb_text = st.text_area("Feedback", placeholder="Write your feedback here...", height=140)
         submitted = st.form_submit_button("Submit Feedback")
-
 
     if submitted:
         if not fb_user.strip():
@@ -803,15 +942,14 @@ def details_main_area():
     st.divider()
     cols = st.columns(2)
     if cols[0].button("🏠 Back to Home", use_container_width=True):
-        st.session_state.view = "home"
+        ss.view = "home"
         st.rerun()
     if cols[1].button("🔁 Refresh this page", use_container_width=True):
         st.rerun()
 
-
-# # =========================================================
-# # Pages (Detail page unchanged visually)
-# # =========================================================
+# =========================================================
+# Pages & Router
+# =========================================================
 def page_home():
     sidebar_file_library()
     home_main_upload_area()
@@ -820,10 +958,7 @@ def page_detail():
     sidebar_file_library()
     details_main_area()
 
-# =========================================================
-# Router
-# =========================================================
-if st.session_state.view == "home":
+if ss.view == "home":
     page_home()
 else:
     page_detail()
