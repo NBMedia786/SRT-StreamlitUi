@@ -1,4 +1,5 @@
 
+
 import os
 import io
 import uuid
@@ -774,7 +775,7 @@ def home_main_upload_area():
                 try:
                     file_bytes, filename = ss.UPLOADED_FILE
                     st.markdown("<br><br>", unsafe_allow_html=True)
-                    with st.spinner("Uploading to RunPod S3…"):
+                    with st.spinner("Uploading…"):
                         result = upload_audio_and_get_paths(file_bytes, filename)
 
                     ss.RUNPOD_OBJECT_KEY = result["object_key"]
@@ -832,24 +833,14 @@ def details_main_area():
         st.warning("No job selected. Go back to Home.")
         return
 
-    # Ensure we have meta/options/paths for this one item
-    _ensure_job_hydrated(job_id)
+    # 🔁 FIRST: refresh status so saved files/output exist before we try to read them
+    data = refresh_status_once(job_id)  # may update ss.jobs[job_id] and write S3 artifacts
 
+    # Re-read the job after refresh
     job = ss.jobs[job_id]
     filename = job.get("filename", "transcription")
     status = job.get("status", "ARCHIVED")
     out = job.get("output") or {}
-
-    # hydrate output if needed
-    if not out:
-        saved = job.get("saved_paths") or {}
-        out_uri = saved.get("output_json")
-        if out_uri:
-            out_key = _key_from_uri(out_uri)
-            loaded = _read_s3_json(S3_BUCKET, out_key)
-            if loaded:
-                out = loaded
-                ss.jobs[job_id]["output"] = out
 
     st.markdown("<br> <br>", unsafe_allow_html=True)
 
@@ -861,17 +852,42 @@ def details_main_area():
     with col2:
         st.markdown(f"<h1 style='margin: 0; padding: 0;'>📄 {filename}</h1>", unsafe_allow_html=True)
 
-    _ = refresh_status_once(job_id)
-    status = ss.jobs[job_id].get("status", status)
     st.caption(f"Status: {status}")
 
+    # If still running, keep spinning and rerun
     if status not in ("COMPLETED", "FAILED", "CANCELLED", "ARCHIVED"):
         show_fullscreen_spinner()
         time.sleep(2)
         st.rerun()
         return
 
-    # Options from meta (if available)
+    # If just completed, we may have fresh output in the response we just fetched.
+    if not out and isinstance(data, dict):
+        maybe_out = data.get("output") or {}
+        if maybe_out:
+            out = maybe_out
+            ss.jobs[job_id]["output"] = out
+
+    # Now try to hydrate from saved_paths/output.json if out is still missing
+    if not out:
+        saved = job.get("saved_paths") or {}
+        out_uri = saved.get("output_json")
+        if out_uri:
+            out_key = _key_from_uri(out_uri)
+            loaded = _read_s3_json(S3_BUCKET, out_key)
+            if loaded:
+                out = loaded
+                ss.jobs[job_id]["output"] = out
+
+    # If we just transitioned and still didn’t see output (S3 eventual consistency edge),
+    # force one more rerun.
+    if status == "COMPLETED" and not out:
+        st.info("Finalizing transcription artifacts…")
+        time.sleep(0.5)
+        st.rerun()
+        return
+
+    # ----- Options / header chips -----
     opts = job.get("pending_options") or _options_for_job(job) or {}
     vad_used    = opts.get("vad_filter", None)
     words_used  = opts.get("max_words_per_line", None)
@@ -887,6 +903,7 @@ def details_main_area():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # ----- TXT -----
     if out.get("txt"):
         with st.container():
             st.subheader("📝 Full Transcript (TXT)")
@@ -895,8 +912,11 @@ def details_main_area():
             line_height = 20
             desired_height = min(2000, max(220, num_lines * line_height))
             st.text_area("TXT preview", value=txt_content, height=desired_height)
-            st.download_button("⬇️ Download TXT", data=txt_content, file_name=f"{os.path.splitext(filename)[0]}.txt", mime="text/plain")
+            st.download_button("⬇️ Download TXT", data=txt_content,
+                               file_name=f"{os.path.splitext(filename)[0]}.txt",
+                               mime="text/plain")
 
+    # ----- SRT -----
     if out.get("srt"):
         with st.container():
             st.subheader("📝 Transcript (SRT)")
@@ -905,25 +925,20 @@ def details_main_area():
             line_height = 20
             desired_height = min(2000, max(220, num_lines * line_height))
             st.text_area("SRT preview", value=srt_content, height=desired_height)
-            st.download_button("⬇️ Download SRT", data=srt_content, file_name=f"{os.path.splitext(filename)[0]}.srt", mime="text/plain")
+            st.download_button("⬇️ Download SRT", data=srt_content,
+                               file_name=f"{os.path.splitext(filename)[0]}.srt",
+                               mime="text/plain")
 
-    # =========================
-    # 💬 Feedback Form
-    # =========================
+    # ----- Feedback -----
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("💬 Leave Feedback")
-
     default_fb_name = editor_name
 
     with st.form("feedback_form", clear_on_submit=True):
         st.text_input("Audio file name", value=filename, disabled=True)
-        fb_user = st.text_input(
-            "Your name",
-            value=default_fb_name,
-            key=f"fb_name_{job_id}",
-            placeholder="Enter your name",
-            max_chars=80,
-        )
+        fb_user = st.text_input("Your name", value=default_fb_name,
+                                key=f"fb_name_{job_id}", placeholder="Enter your name",
+                                max_chars=80)
         fb_text = st.text_area("Feedback", placeholder="Write your feedback here...", height=140)
         submitted = st.form_submit_button("Submit Feedback")
 
@@ -934,7 +949,8 @@ def details_main_area():
             st.warning("Please write some feedback before submitting.")
         else:
             try:
-                _ = save_feedback_to_s3(filename=filename, user_name=fb_user.strip(), feedback=fb_text.strip(), job_id=job_id)
+                _ = save_feedback_to_s3(filename=filename, user_name=fb_user.strip(),
+                                        feedback=fb_text.strip(), job_id=job_id)
                 st.success("Thanks! Your feedback was saved")
             except Exception as e:
                 st.error(f"Could not save feedback: {e}")
@@ -946,6 +962,7 @@ def details_main_area():
         st.rerun()
     if cols[1].button("🔁 Refresh this page", use_container_width=True):
         st.rerun()
+
 
 # =========================================================
 # Pages & Router
